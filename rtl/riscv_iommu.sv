@@ -18,7 +18,7 @@
 
 module riscv_iommu #(
     // Number of IOTLB entries
-    parameter int unsigned  IOTLB_ENTRIES       = 4,
+    parameter int unsigned  IOTLB_ENTRIES       = 16,
     // Number of DDTC entries
     parameter int unsigned  DDTC_ENTRIES        = 4,
     // Number of PDTC entries

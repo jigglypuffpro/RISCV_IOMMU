@@ -227,19 +227,10 @@ public:
 
 // Setup known Sv39 / RISC-V IOMMU Page Tables
 static void populate_page_tables(DeterministicMemoryModel& mem) {
-    std::cout << "[+] Populating deterministic RISC-V IOMMU page tables..." << std::endl;
+    std::cout << "[+] Populating deterministic RISC-V IOMMU page tables for Thrashing Test..." << std::endl;
 
-    // 1. DDT (Device Directory Table) at PPN 0x10 (Address 0x10000)
-    // 1-LVL DDT with 64-byte DC (Device Context) entries
-    // Device ID 10 (0x0A): DC Address = 0x10000 + 10 * 64 = 0x10280
     uint64_t dc_addr_10 = 0x10280;
-    
-    // DC entry layout (512 bits / 8 x 64-bit words):
-    // Word 0 (tc): tc.v = 1 (bit 0)
-    // Word 1 (iohgatp): 0x0 (Bare / Stage-2 disabled)
-    // Word 2 (ta): 0x0
-    // Word 3 (fsc): Mode 8 (Sv39) | PPN 0x20 (Stage-1 root page table at 0x20000)
-    uint64_t tc_val = 1ULL; // Valid bit = 1
+    uint64_t tc_val = 1ULL;
     uint64_t fsc_val = (8ULL << 60) | 0x20ULL; // Sv39 mode + root PPN 0x20
 
     mem.write64(dc_addr_10 + 0, tc_val);
@@ -247,39 +238,20 @@ static void populate_page_tables(DeterministicMemoryModel& mem) {
     mem.write64(dc_addr_10 + 16, 0ULL);
     mem.write64(dc_addr_10 + 24, fsc_val);
 
-    // Device ID 20 (0x14): DC Address = 0x10000 + 20 * 64 = 0x10500
-    uint64_t dc_addr_20 = 0x10500;
-    mem.write64(dc_addr_20 + 0, tc_val);
-    mem.write64(dc_addr_20 + 8, 0ULL);
-    mem.write64(dc_addr_20 + 16, 0ULL);
-    mem.write64(dc_addr_20 + 24, fsc_val);
-
-    // 2. Stage-1 Sv39 Page Table starting at PPN 0x20 (Address 0x20000)
-    // Target IOVA 1: 0x0000000000004000 -> VPN[2]=0, VPN[1]=0, VPN[0]=4
-    // Target SPA 1:  0x0000000080004000 -> PPN = 0x80004
-    // Root PT (0x20000) index 0 -> Non-leaf PTE pointing to L1 PT at PPN 0x21 (0x21000)
-    // L1 PT   (0x21000) index 0 -> Non-leaf PTE pointing to L0 PT at PPN 0x22 (0x22000)
-    // L0 PT   (0x22000) index 4 -> Leaf PTE mapping to PPN 0x80004 (SPA 0x80004000)
-
-    uint64_t pte_l2 = (0x21ULL << 10) | 0x01ULL; // Non-leaf, Valid=1
-    uint64_t pte_l1 = (0x22ULL << 10) | 0x01ULL; // Non-leaf, Valid=1
+    uint64_t pte_l2 = (0x21ULL << 10) | 0x01ULL; // Non-leaf
+    uint64_t pte_l1 = (0x22ULL << 10) | 0x01ULL; // Non-leaf
 
     mem.write64(0x20000, pte_l2);
     mem.write64(0x21000, pte_l1);
 
-    // L0 Table at 0x22000
-    // IOVA 0x4000 -> VPN[0] = 4 -> Address 0x22020 -> SPA 0x80004000
-    // RISC-V PTE: PPN << 10 | V=1, R=1, W=1, X=1, A=1, D=1 (0xC7)
-    uint64_t pte_4000 = ((0x80004000ULL >> 12) << 10) | 0xC7ULL;
-    mem.write64(0x22020, pte_4000);
-
-    // IOVA 0x8000 -> VPN[0] = 8 -> Address 0x22040 -> SPA 0x90008000
-    uint64_t pte_8000 = ((0x90008000ULL >> 12) << 10) | 0xC7ULL;
-    mem.write64(0x22040, pte_8000);
-
-    std::cout << "  - Configured DDT at 0x10000 for Device ID 10 & 20" << std::endl;
-    std::cout << "  - Mapped IOVA 0x0000000000004000 -> SPA 0x0000000080004000" << std::endl;
-    std::cout << "  - Mapped IOVA 0x0000000000008000 -> SPA 0x0000000090008000" << std::endl;
+    // Map 17 pages starting from IOVA 0x0000 (VPN 0)
+    for (int i = 0; i < 17; i++) {
+        uint64_t iova = (uint64_t)i * 0x1000ULL;
+        uint64_t pte_addr = 0x22000 + (i * 8); // L0 PTE address
+        uint64_t spa = 0x80000000ULL + (i * 0x1000ULL); // target SPA
+        uint64_t pte_val = ((spa >> 12) << 10) | 0xC7ULL; // Valid, R, W, X, A, D
+        mem.write64(pte_addr, pte_val);
+    }
 }
 
 // ============================================================================
@@ -317,9 +289,10 @@ int main(int argc, char** argv) {
     uint64_t cycle = 0;
     bool req_active = false;
     uint64_t req_start_cycle = 0;
+    bool req_clear_pending = false;
     int exp_stage = 0;
 
-    for (uint64_t time = 0; time < 4000; time++) {
+    for (uint64_t time = 0; time < 40000; time++) {
         // Toggle clock every 5 ps (10 ps period = 100 MHz clock cycle)
         top->clk_i = (time % 10 < 5) ? 0 : 1;
         top->eval();
@@ -354,53 +327,18 @@ int main(int argc, char** argv) {
             }
 
             // Execute Experiment Sequence
-            // Exp A (Cold): Dev 10, IOVA 0x4000 at Cycle 50
-            if (cycle == 50 && exp_stage == 0) {
-                std::cout << "[Cycle " << cycle << "] [EXP A - COLD] Driver issuing DMA Translation Request: Dev=10, IOVA=0x4000" << std::endl;
-                set_dev_tr_req_ar(top->dev_tr_req_i, 10, 0, false, 0x4000ULL, 2, 1);
+            // Issue 17 requests (Pass 1 - Cold Misses) then 17 requests (Pass 2 - Capacity Misses)
+            if (!req_active && req_clear_pending == false && cycle > 50 && cycle % 100 == 0 && exp_stage < 34) {
+                uint64_t req_idx = exp_stage % 17;
+                uint64_t iova = req_idx * 0x1000ULL;
+                std::cout << "[Cycle " << cycle << "] [REQ " << exp_stage << "] Driver issuing DMA Request: Dev=10, IOVA=0x" << std::hex << iova << std::dec << std::endl;
+                set_dev_tr_req_ar(top->dev_tr_req_i, 10, 0, false, iova, 2, exp_stage + 1);
                 req_active = true;
                 req_start_cycle = cycle;
-                exp_stage = 1;
-            }
-
-            // Exp B (Warm): Same Dev 10, IOVA 0x4000 at Cycle 120
-            if (cycle == 120 && exp_stage == 1) {
-                std::cout << "[Cycle " << cycle << "] [EXP B - WARM] Driver re-issuing DMA Translation Request: Dev=10, IOVA=0x4000" << std::endl;
-                set_dev_tr_req_ar(top->dev_tr_req_i, 10, 0, false, 0x4000ULL, 2, 2);
-                req_active = true;
-                req_start_cycle = cycle;
-                exp_stage = 2;
-            }
-
-            // Exp C (Diff Page): Dev 10, IOVA 0x8000 at Cycle 170
-            if (cycle == 170 && exp_stage == 2) {
-                std::cout << "[Cycle " << cycle << "] [EXP C - DIFF PAGE] Driver issuing DMA Translation Request: Dev=10, IOVA=0x8000" << std::endl;
-                set_dev_tr_req_ar(top->dev_tr_req_i, 10, 0, false, 0x8000ULL, 2, 3);
-                req_active = true;
-                req_start_cycle = cycle;
-                exp_stage = 3;
-            }
-
-            // Exp E (Diff Device): Dev 20, IOVA 0x4000 at Cycle 220
-            if (cycle == 220 && exp_stage == 3) {
-                std::cout << "[Cycle " << cycle << "] [EXP E - DIFF DEV] Driver issuing DMA Translation Request: Dev=20, IOVA=0x4000" << std::endl;
-                set_dev_tr_req_ar(top->dev_tr_req_i, 20, 0, false, 0x4000ULL, 2, 4);
-                req_active = true;
-                req_start_cycle = cycle;
-                exp_stage = 4;
-            }
-
-            // Exp F (Fault Unmapped): Dev 10, IOVA 0xF00000 (Unmapped) at Cycle 270
-            if (cycle == 270 && exp_stage == 4) {
-                std::cout << "[Cycle " << cycle << "] [EXP F - FAULT] Driver issuing Unmapped Request: Dev=10, IOVA=0xF00000" << std::endl;
-                set_dev_tr_req_ar(top->dev_tr_req_i, 10, 0, false, 0xF00000ULL, 2, 5);
-                req_active = true;
-                req_start_cycle = cycle;
-                exp_stage = 5;
+                exp_stage++;
             }
 
             // De-assert request one cycle after AXI ar_ready handshake completes
-            static bool req_clear_pending = false;
             if (req_clear_pending) {
                 clear_dev_tr_req(top->dev_tr_req_i);
                 top->dev_tr_req_i[0] |= 1; // set r_ready to 1
@@ -416,7 +354,6 @@ int main(int argc, char** argv) {
                 req_clear_pending = true;
             }
 
-            
             // Handle dev_comp_req_o -> dev_comp_resp_i (reflect translated address)
             bool comp_ar_valid = (top->dev_comp_req_o[0] >> 1) & 1;
             static bool mem_resp_pending = false;
