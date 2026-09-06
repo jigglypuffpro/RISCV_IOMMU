@@ -693,7 +693,9 @@ module riscv_iommu #(
     // In this scenario, there's no need to include this logic.
     else begin : gen_axi4_bc_disabled
 
-        assign request_ongoing   = (request_type_q != IDLE);
+        assign request_ongoing   = (request_type_q != IDLE) && 
+                                   !(request_type_q == READ && dev_tr_resp_o.ar_ready) && 
+                                   !(request_type_q == WRITE && dev_tr_resp_o.aw_ready);
         assign bound_violation = 1'b0;
     end : gen_axi4_bc_disabled
     endgenerate

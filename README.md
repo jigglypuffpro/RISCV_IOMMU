@@ -1,5 +1,58 @@
-# RISC-V IOMMU
+# TempoIOMMU-RV: RISC-V IOMMU Latency & Caching Research
 
+## Project Overview
+
+**TempoIOMMU-RV** is a research project built on top of the open-source RISC-V IOMMU (developed by Zero Day Labs). 
+
+The primary goal of this project is to create a deterministic, cycle-accurate simulation environment to study the **timing, latency, and interference effects** of the IOMMU's address translation caching structures. Specifically, we are investigating the performance impact of IOTLB (I/O Translation Lookaside Buffer) hits vs. misses, and the subsequent Context Directory (DDT) and Page Table Walks (PTW).
+
+### What We Are Trying to Implement
+1. **Deterministic Testbench (C++)**: Modify the existing Verilator testbench to generate precise sequence of AXI requests with controlled cycle timings to isolate caching behaviors (Cold requests, Warm requests, Cross-page, Cross-device).
+2. **Correct AXI Handshaking**: Ensure the IOMMU's AXI interfaces (`dev_tr_req_i`, `dev_comp_resp_i`) correctly simulate the multi-cycle nature of memory responses to avoid combinatorial "phantom walks" and premature request clearing.
+3. **Automated Trace Analysis**: Develop a Python-based pipeline to parse VCD simulation traces and automatically extract latency statistics for different transaction types.
+
+## What We Have Obtained (Results)
+
+We successfully patched the RTL state machine and the C++ testbench AXI handshake logic to eliminate spurious requests (Phantom Walks). Our simulation now successfully tracks requests from generation to completion across the IOMMU's internal components.
+
+### Trace Results
+Our automated VCD parser extracted the following results from a standard 5-request test sequence:
+
+1. **Request 1 (Cold - Device 10, IOVA 0x4000)**
+   - **Result:** IOTLB Miss $\rightarrow$ DDT Walk (Yes) $\rightarrow$ PTW (Yes)
+   - **Latency:** 27 cycles
+   - **Status:** SUCCESS
+
+2. **Request 2 (Warm - Device 10, IOVA 0x4000)**
+   - **Result:** IOTLB Hit $\rightarrow$ No walks needed
+   - **Latency:** 2 cycles
+   - **Status:** SUCCESS
+
+3. **Request 3 (Different Page - Device 10, IOVA 0x8000)**
+   - **Result:** IOTLB Miss $\rightarrow$ DDT Walk (No, cached) $\rightarrow$ PTW (Yes)
+   - **Latency:** 15 cycles
+   - **Status:** SUCCESS
+
+4. **Request 4 (Different Device - Device 20, IOVA 0x4000)**
+   - **Result:** IOTLB Hit $\rightarrow$ DDT Walk (Yes, fetch context) $\rightarrow$ PTW (No, shared translation)
+   - **Latency:** 14 cycles
+   - **Status:** SUCCESS
+
+5. **Request 5 (Fault - Device 10, IOVA 0xF00000)**
+   - **Result:** IOTLB Miss $\rightarrow$ PTW (Yes) $\rightarrow$ Page Fault (Unmapped)
+   - **Latency:** 13 cycles
+   - **Status:** FAILED (Returned Error via AXI Error Slave)
+
+*Plots of these latencies are automatically generated in the `results/` directory.*
+
+## What Is Remaining
+- **Interference Modeling**: Introduce competing traffic on the downstream memory interconnect to measure how IOMMU walks are delayed by system contention.
+- **Advanced Caching Policies**: Explore replacing the fully-associative IOATCs with set-associative designs to measure hit-rate tradeoffs.
+- **Invalidation Testing**: Implement ATS/Invalidation flows to verify latency when cached entries must be shot down.
+
+---
+
+# Original RISC-V IOMMU Repository
 ## License
 
 This work is licensed under the Apache-2.0 License and the Solderpad Hardware License v2.1 (Apache-2.0 WITH SHL-2.1). See [LICENSE.Solerpad](./LICENSE.Solerpad) and [LICENSE.Apache](./LICENSE.Apache) files for details.
