@@ -62,7 +62,7 @@ import rv_iommu::*;
 
 	riscv_iommu #(
 		.IOTLB_ENTRIES		( 16				),
-		.DDTC_ENTRIES		( 8					),
+		.DDTC_ENTRIES		( 4					),
 		.PDTC_ENTRIES		( 8					),
 		.MRIFC_ENTRIES		( 4					),
 

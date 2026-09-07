@@ -59,7 +59,7 @@ parse:
 	python3 scripts/parse_vcd.py sim_trace.vcd
 
 stats:
-	python3 scripts/statistics.py results/translation_trace.json
+	python3 scripts/calc_stats.py results/translation_trace.json
 
 plot:
 	python3 scripts/plot_latency.py results/translation_trace.csv

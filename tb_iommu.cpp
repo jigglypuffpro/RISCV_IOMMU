@@ -130,26 +130,33 @@ static void set_prog_req_write(IData* req, uint64_t addr, uint64_t data, uint8_t
 // Deterministic Cycle-Aware Memory & Page Table Model
 // ============================================================================
 
+#include <queue>
+#include <cstdlib>
+
 class DeterministicMemoryModel {
 private:
     std::map<uint64_t, uint64_t> mem;
-    int latency_cycles;
+    int base_latency_cycles;
     
     struct PendingRead {
-        bool active;
         uint64_t base_addr;
         uint32_t len;
         uint32_t current_beat;
         uint32_t id;
         uint64_t ready_cycle;
-    } pending_read;
+    };
+    
+    std::queue<PendingRead> read_queue;
+    PendingRead active_read;
+    bool has_active_read;
+    uint64_t next_ar_ready_cycle;
 
 public:
-    DeterministicMemoryModel(int lat = 3) : latency_cycles(lat) {
-        pending_read.active = false;
+    DeterministicMemoryModel(int lat = 3) : base_latency_cycles(lat), has_active_read(false), next_ar_ready_cycle(0) {
+        srand(42); // Deterministic seed for reproducible simulation
     }
 
-    void set_latency(int lat) { latency_cycles = lat; }
+    void set_latency(int lat) { base_latency_cycles = lat; }
 
     void write64(uint64_t addr, uint64_t val) {
         mem[addr] = val;
@@ -166,47 +173,59 @@ public:
         // Clear response outputs by default
         for (int i = 0; i < 3; i++) top->ds_resp_i[i] = 0;
 
-        // Drive ar_ready = 1 always to accept requests immediately
-        // ds_resp_i (resp_t): bit 82 is ar_ready (bit 18 of word 2)
-        top->ds_resp_i[2] |= (1U << 18);
-
-        // Extract ar_valid, ar_addr, ar_len from ds_req_o
-        // ds_req_o (req_t):
-        // Bit 1: ar_valid
-        // Bits 31:24: ar.len (8 bits) -> word 0 bits 31:24
-        // Bits 95:32: ar.addr (64 bits) -> word 1 and word 2 bits 31:0
-        // Bits 99:96: ar.id (4 bits) -> word 3 bits 3:0
-        
         bool ar_valid = (top->ds_req_o[0] >> 1) & 1;
         uint32_t ar_len = (top->ds_req_o[0] >> 24) & 0xFF;
         uint64_t ar_addr = (((uint64_t)top->ds_req_o[2] & 0xFFFFFFFFULL) << 32) | ((uint64_t)top->ds_req_o[1]);
         uint32_t ar_id = (top->ds_req_o[3] >> 0) & 0xF;
 
-        // Handle incoming request start
-        if (ar_valid && !pending_read.active) {
-            std::cout << "[MemModel Cycle " << current_cycle << "] Read request accepted: addr=0x" << std::hex << ar_addr << " len=" << ar_len << std::dec << std::endl;
-            pending_read.active = true;
-            pending_read.base_addr = ar_addr;
-            pending_read.len = ar_len;
-            pending_read.current_beat = 0;
-            pending_read.id = ar_id;
-            
-            static int read_count = 0;
-            read_count++;
-            uint32_t applied_latency = latency_cycles;
-            if (read_count % 4 == 0) {
-                applied_latency += 30; // 30-cycle interconnect burst stall
-                std::cout << "[MemModel Cycle " << current_cycle << "] STALL INJECTED! +30 cycles for addr=0x" << std::hex << ar_addr << std::dec << std::endl;
-            }
-            pending_read.ready_cycle = current_cycle + applied_latency;
-
+        // 1. Randomized ARREADY backpressure
+        bool ar_ready = false;
+        if (current_cycle >= next_ar_ready_cycle) {
+            // Memory is ready to accept a new request
+            ar_ready = true;
+            top->ds_resp_i[2] |= (1U << 18); // bit 82 is ar_ready (bit 18 of word 2)
         }
 
-        // Handle burst read response beats
-        if (pending_read.active && current_cycle >= pending_read.ready_cycle) {
-            uint64_t beat_addr = pending_read.base_addr + (pending_read.current_beat * 8);
+        // 2. Accept incoming request into delay queue
+        if (ar_valid && ar_ready) {
+            PendingRead req;
+            req.base_addr = ar_addr;
+            req.len = ar_len;
+            req.current_beat = 0;
+            req.id = ar_id;
+            
+            // Randomize stall cycles to simulate congestion (e.g. between 5 and 50 cycles)
+            int random_stall = 5 + (rand() % 46);
+            
+            req.ready_cycle = current_cycle + base_latency_cycles + random_stall;
+            
+            std::cout << "[MemModel Cycle " << current_cycle 
+                      << "] Read request QUEUED: addr=0x" << std::hex << ar_addr 
+                      << " len=" << ar_len << std::dec 
+                      << " | Random stall: " << random_stall << " cycles" << std::endl;
+            
+            read_queue.push(req);
+            
+            // Introduce random backpressure before accepting the next ARVALID
+            next_ar_ready_cycle = current_cycle + (rand() % 10); // stall ARREADY for 0 to 9 cycles
+        }
+
+        // 3. Process the delay queue
+        if (!has_active_read && !read_queue.empty()) {
+            PendingRead front_req = read_queue.front();
+            if (current_cycle >= front_req.ready_cycle) {
+                // Time to start returning data for this request
+                active_read = front_req;
+                has_active_read = true;
+                read_queue.pop();
+            }
+        }
+
+        // 4. Handle burst read response beats
+        if (has_active_read) {
+            uint64_t beat_addr = active_read.base_addr + (active_read.current_beat * 8);
             uint64_t val = read64(beat_addr);
-            bool is_last = (pending_read.current_beat == pending_read.len);
+            bool is_last = (active_read.current_beat == active_read.len);
 
             // Drive r_valid (bit 72 -> bit 8 of word 2)
             top->ds_resp_i[2] |= (1U << 8);
@@ -222,13 +241,13 @@ public:
             top->ds_resp_i[2] |= (uint32_t)((val >> 60) & 0xF);
 
             // Drive r_id (bits 71:68 -> bits 7:4 of word 2)
-            top->ds_resp_i[2] |= ((pending_read.id & 0xF) << 4);
+            top->ds_resp_i[2] |= ((active_read.id & 0xF) << 4);
 
             if (is_last) {
-                pending_read.active = false;
+                has_active_read = false;
             } else {
-                pending_read.current_beat++;
-                pending_read.ready_cycle = current_cycle + 1; // 1 beat per cycle
+                active_read.current_beat++;
+                // 1 beat per cycle
             }
         }
     }
