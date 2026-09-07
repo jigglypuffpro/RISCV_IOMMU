@@ -227,16 +227,20 @@ public:
 
 // Setup known Sv39 / RISC-V IOMMU Page Tables
 static void populate_page_tables(DeterministicMemoryModel& mem) {
-    std::cout << "[+] Populating deterministic RISC-V IOMMU page tables for Thrashing Test..." << std::endl;
+    std::cout << "[+] Populating deterministic RISC-V IOMMU page tables for DDTC Thrashing Test..." << std::endl;
 
-    uint64_t dc_addr_10 = 0x10280;
     uint64_t tc_val = 1ULL;
     uint64_t fsc_val = (8ULL << 60) | 0x20ULL; // Sv39 mode + root PPN 0x20
 
-    mem.write64(dc_addr_10 + 0, tc_val);
-    mem.write64(dc_addr_10 + 8, 0ULL);
-    mem.write64(dc_addr_10 + 16, 0ULL);
-    mem.write64(dc_addr_10 + 24, fsc_val);
+    // Map 5 Device Contexts to the same page tables
+    int devices[] = {10, 20, 30, 40, 50};
+    for (int dev : devices) {
+        uint64_t dc_addr = 0x10000 + dev * 64;
+        mem.write64(dc_addr + 0, tc_val);
+        mem.write64(dc_addr + 8, 0ULL);
+        mem.write64(dc_addr + 16, 0ULL);
+        mem.write64(dc_addr + 24, fsc_val);
+    }
 
     uint64_t pte_l2 = (0x21ULL << 10) | 0x01ULL; // Non-leaf
     uint64_t pte_l1 = (0x22ULL << 10) | 0x01ULL; // Non-leaf
@@ -244,14 +248,10 @@ static void populate_page_tables(DeterministicMemoryModel& mem) {
     mem.write64(0x20000, pte_l2);
     mem.write64(0x21000, pte_l1);
 
-    // Map 17 pages starting from IOVA 0x0000 (VPN 0)
-    for (int i = 0; i < 17; i++) {
-        uint64_t iova = (uint64_t)i * 0x1000ULL;
-        uint64_t pte_addr = 0x22000 + (i * 8); // L0 PTE address
-        uint64_t spa = 0x80000000ULL + (i * 0x1000ULL); // target SPA
-        uint64_t pte_val = ((spa >> 12) << 10) | 0xC7ULL; // Valid, R, W, X, A, D
-        mem.write64(pte_addr, pte_val);
-    }
+    // Map single IOVA 0x4000 to SPA 0x80004000
+    uint64_t pte_addr = 0x22020; // 0x4000 -> VPN 4
+    uint64_t pte_val = ((0x80004000ULL >> 12) << 10) | 0xC7ULL; // Valid, R, W, X, A, D
+    mem.write64(pte_addr, pte_val);
 }
 
 // ============================================================================
@@ -327,12 +327,13 @@ int main(int argc, char** argv) {
             }
 
             // Execute Experiment Sequence
-            // Issue 17 requests (Pass 1 - Cold Misses) then 17 requests (Pass 2 - Capacity Misses)
-            if (!req_active && req_clear_pending == false && cycle > 50 && cycle % 100 == 0 && exp_stage < 34) {
-                uint64_t req_idx = exp_stage % 17;
-                uint64_t iova = req_idx * 0x1000ULL;
-                std::cout << "[Cycle " << cycle << "] [REQ " << exp_stage << "] Driver issuing DMA Request: Dev=10, IOVA=0x" << std::hex << iova << std::dec << std::endl;
-                set_dev_tr_req_ar(top->dev_tr_req_i, 10, 0, false, iova, 2, exp_stage + 1);
+            // Issue 30 requests looping through 5 devices on the same IOVA
+            if (!req_active && req_clear_pending == false && cycle > 50 && cycle % 100 == 0 && exp_stage < 30) {
+                int devices[] = {10, 20, 30, 40, 50};
+                int dev = devices[exp_stage % 5];
+                uint64_t iova = 0x4000ULL;
+                std::cout << "[Cycle " << cycle << "] [REQ " << exp_stage << "] Driver issuing DMA Request: Dev=" << dev << ", IOVA=0x" << std::hex << iova << std::dec << std::endl;
+                set_dev_tr_req_ar(top->dev_tr_req_i, dev, 0, false, iova, 2, exp_stage + 1);
                 req_active = true;
                 req_start_cycle = cycle;
                 exp_stage++;
