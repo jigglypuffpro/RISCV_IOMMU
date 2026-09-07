@@ -190,7 +190,16 @@ public:
             pending_read.len = ar_len;
             pending_read.current_beat = 0;
             pending_read.id = ar_id;
-            pending_read.ready_cycle = current_cycle + latency_cycles;
+            
+            static int read_count = 0;
+            read_count++;
+            uint32_t applied_latency = latency_cycles;
+            if (read_count % 4 == 0) {
+                applied_latency += 30; // 30-cycle interconnect burst stall
+                std::cout << "[MemModel Cycle " << current_cycle << "] STALL INJECTED! +30 cycles for addr=0x" << std::hex << ar_addr << std::dec << std::endl;
+            }
+            pending_read.ready_cycle = current_cycle + applied_latency;
+
         }
 
         // Handle burst read response beats
