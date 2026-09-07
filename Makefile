@@ -39,10 +39,27 @@ INC += -I./rtl/software_interface/regmap
 INC += -I./rtl/software_interface/wrapper
 INC += -I./rtl/ext_interfaces
 
-all: lint
+VERILATOR ?= verilator
+
+all: build sim parse stats plot
 
 lint:
-	verilator-5.022 ${COMP_FLAGS} lint_checks.sv ${INC} ${WARN_FLAGS}
+	$(VERILATOR) ${COMP_FLAGS} lint_checks.sv ${INC} ${WARN_FLAGS}
 
 lint2log:
-	verilator-5.022 ${COMP_FLAGS} lint_checks.sv ${INC} ${WARN_FLAGS} 2> verilator.log
+	$(VERILATOR) ${COMP_FLAGS} lint_checks.sv ${INC} ${WARN_FLAGS} 2> verilator.log
+
+build:
+	$(VERILATOR) --cc --trace --exe tb_iommu.cpp lint_checks.sv ${INC} ${WARN_FLAGS} -Wno-WIDTH -Wno-UNOPTFLAT --build -o Vlint_checks
+
+sim: build
+	./obj_dir/Vlint_checks
+
+parse:
+	python3 scripts/parse_vcd.py sim_trace.vcd
+
+stats:
+	python3 scripts/statistics.py results/translation_trace.json
+
+plot:
+	python3 scripts/plot_latency.py results/translation_trace.csv

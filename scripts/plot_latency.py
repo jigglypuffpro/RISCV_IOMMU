@@ -41,7 +41,8 @@ def plot_latencies(csv_file):
     miss_lats = df[df['iotlb_miss'] == 'YES']['latency_cycles'].dropna()
     
     plt.figure(figsize=(10, 6))
-    plt.boxplot([hit_lats, miss_lats], labels=['IOTLB Hit', 'IOTLB Miss'])
+    plt.boxplot([hit_lats, miss_lats])
+    plt.xticks([1, 2], ['IOTLB Hit', 'IOTLB Miss'])
     plt.title('Latency: IOTLB Hit vs Miss')
     plt.ylabel('Latency (Cycles)')
     plt.grid(True)
