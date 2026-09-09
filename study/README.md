@@ -6,6 +6,12 @@ These experiments are modeled after real-world IOMMU performance bottlenecks and
 
 ---
 
+## Documentation
+
+* [Simulation Workflow & Methodology](Simulation_Workflow.md): A high-level guide on how hardware/testbench parameters are configured, and the execution flow from Verilator compilation to trace parsing and plotting.
+
+---
+
 ## Table of Contents & Experiment Overview
 
 ### 1. [Experiment 1: IOTLB Capacity Thrashing](IOTLB_Capacity_Thrashing.md)
